@@ -36,6 +36,18 @@ if [[ -f "$runtime_dir/private-display" ]]; then
 else
     warn "未找到 private-display runtime（bridge 未完成启动或路径不同）"
 fi
+# 键鼠直注路由：vnc relay 无 GNOME RDP 会话，route=rdp 时控制端键鼠有去无回
+saved_route="$(sed -n 's/^UURB_KEYBOARD_ROUTE=//p' "$HOME/.config/uu-remote-bridge/environment" 2>/dev/null | tail -n 1)"
+if [[ "$saved_route" == x11 || "$saved_route" == auto ]]; then
+    ok "environment UURB_KEYBOARD_ROUTE=$saved_route"
+else
+    bad "environment UURB_KEYBOARD_ROUTE=${saved_route:-<未设>}（vnc relay 下 rdp 是输入死路；重装应带 --keyboard-route x11）"
+fi
+if [[ -s "$runtime_dir/x11-input.port" ]] && pgrep -x uu-x11-input >/dev/null 2>&1; then
+    ok "x11-input helper 在线（XTEST 直注画布，port $(cat "$runtime_dir/x11-input.port")）"
+else
+    bad "x11-input helper 未运行——控制端键鼠不可用（桥日志应有 'direct X11 injection' 一行）"
+fi
 
 echo "── 3. UU 进程与在线态 ──"
 if pgrep -f 'C:.*GameViewerServer\.exe' >/dev/null 2>&1; then

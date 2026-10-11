@@ -90,12 +90,16 @@ x86_64-w64-mingw32-gcc -std=c11 -O2 -Wall -Wextra -Werror \
     src/uu_conpty_shim.c src/uu_conpty_shim.def -lws2_32
 x86_64-w64-mingw32-strip build/compat/uu-conpty.dll
 
-log "调用上游 install.sh（target=$CANVAS_DISPLAY relay=vnc $CANVAS_RESOLUTION，登录后置，桥由本脚本拉起）"
+# keyboard-route 必须显式 x11：vnc relay 模式没有 GNOME RDP 会话，默认 rdp 路由
+# 是死路（控制端键鼠有去无回＝"不能输入/鼠标消失"）。x11 让 uu-x11-input helper
+# 以 XTEST 直注画布（键盘+指针），手机文字粘贴（semantic）也随之激活。
+log "调用上游 install.sh（target=$CANVAS_DISPLAY relay=vnc $CANVAS_RESOLUTION keyboard=x11，登录后置，桥由本脚本拉起）"
 cd "$repo_dir"
 ./install.sh \
     --desktop-target "$CANVAS_DISPLAY" \
     --desktop-relay vnc \
     --resolution "$CANVAS_RESOLUTION" \
+    --keyboard-route x11 \
     --skip-account-login \
     --no-start
 
