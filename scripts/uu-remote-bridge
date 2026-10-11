@@ -1420,6 +1420,19 @@ install_terminal_mux_proxy() {
         mv -f -- "${mux_proxy_exe}.tmp" "$mux_proxy_exe"
 }
 
+rotate_state_logs() {
+    # Keep one generation of state logs past 8 MB each; the broker's own
+    # append redirect then starts a fresh file.
+    local log_file
+
+    for log_file in "$state_dir"/*.log; do
+        [[ -f "$log_file" ]] || continue
+        if (( $(stat -c %s "$log_file") > 8 * 1024 * 1024 )); then
+            mv -f -- "$log_file" "$log_file.1"
+        fi
+    done
+}
+
 start_terminal_bridge() {
     local config_temporary
     local mux_runtime=false
@@ -1431,6 +1444,7 @@ start_terminal_bridge() {
         log 'The native Ubuntu terminal compatibility bridge is missing or inconsistent.'
         return 1
     fi
+    rotate_state_logs
     if install_terminal_conpty_shim; then
         log 'The conpty.dll shim is active; UU terminals open through the PTY broker.'
     else
@@ -1517,6 +1531,14 @@ start_terminal_bridge() {
     return 1
 }
 
+# Crashpad/Sentry quota: dump directories and attachments older than a
+# week are diagnostics history, not operational state.
+sentry_dir="$WINEPREFIX/drive_c/Program Files/Netease/GameViewer/log/service/Sentry"
+if [[ -d "$sentry_dir" ]]; then
+    find "$sentry_dir" -maxdepth 1 -type d -name '*.run' -mtime +7 \
+        -exec rm -rf {} + 2>/dev/null || true
+    find "$sentry_dir" -type f -name '*.dmp' -mtime +7 -delete 2>/dev/null || true
+fi
 mkdir -p \
     "$state_dir" \
     "$runtime_dir" \

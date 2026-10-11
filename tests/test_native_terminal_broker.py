@@ -1,6 +1,7 @@
 import os
 import re
 from pathlib import Path
+import select
 import signal
 import socket
 import struct
@@ -361,6 +362,36 @@ class PersistentTerminalSessionTests(NativeTerminalBrokerTests):
         self.assertNotIn(b"3008", produced)
         self.assertNotIn(b"type=shell", produced)
         self.assertNotIn(b"machineid", produced)
+        viewer.close()
+
+    def test_bulk_output_without_escapes_passes_through(self):
+        # The OSC 3008 filter's fast path moves ESC-free chunks with memcpy;
+        # a large bulk flood must arrive byte-exact.
+        port = self.start()
+        viewer = self.connect(port, self.ATTACH, "session1")
+        self.assertIsNotNone(viewer)
+        total = 300000
+        self.send_input(
+            viewer,
+            b"head -c %d /dev/zero | tr '\\0' 'x'; echo BULK-DONE\n" % total,
+        )
+        output = b""
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            r, _, _ = select.select([viewer], [], [], 0.5)
+            if not r:
+                continue
+            chunk = viewer.recv(65536)
+            if not chunk:
+                break
+            output += chunk
+            if b"BULK-DONE" in output and len(output) > total:
+                break
+        self.assertIn(b"BULK-DONE", output)
+        body = output.replace(b"\r", b"")
+        # The echoed command line contributes a few extra x's on top of the
+        # flood; the fast path must not lose or corrupt any flood byte.
+        self.assertGreaterEqual(body.count(b"x"), total)
         viewer.close()
 
     def test_sessions_are_independent(self):

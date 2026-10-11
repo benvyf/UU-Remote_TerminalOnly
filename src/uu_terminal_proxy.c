@@ -81,6 +81,15 @@ static void trace_event(const char *event)
     if (!slash) slash = strrchr(path, '/');
     if (!slash) goto done;
     strcpy(slash + 1, "uu-terminal-proxy.trace");
+    {
+        WIN32_FILE_ATTRIBUTE_DATA info;
+
+        /* Trace rotation: past 2 MB the next event starts a fresh file. */
+        if (GetFileAttributesExA(path, GetFileExInfoStandard, &info) &&
+            (info.nFileSizeHigh != 0 ||
+             info.nFileSizeLow > 2u * 1024 * 1024))
+            DeleteFileA(path);
+    }
     file = CreateFileA(path, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                        NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
     if (file == INVALID_HANDLE_VALUE) goto done;

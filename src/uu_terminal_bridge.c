@@ -359,6 +359,21 @@ static size_t osc3008_filter_chunk(const unsigned char *in, size_t len,
 {
     size_t in_index = 0, out_index = 0;
 
+    /* Fast path: with no sequence in progress and no partial intro match,
+     * a chunk without ESC passes through untouched — the common case for
+     * bulk output, keeping the filter off the per-byte path. */
+    if (!osc3008_filter.in_sequence && osc3008_filter.intro_matched == 0) {
+        const unsigned char *escape = memchr(in, 0x1b, len);
+
+        if (escape == NULL) {
+            memcpy(out, in, len);
+            return len;
+        }
+        in_index = (size_t)(escape - in);
+        memcpy(out, in, in_index);
+        out_index = in_index;
+    }
+
     while (in_index < len) {
         unsigned char c = in[in_index++];
         int emit = 1;
