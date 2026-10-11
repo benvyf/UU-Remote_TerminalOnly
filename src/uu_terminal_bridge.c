@@ -119,98 +119,68 @@ static int wait_for_fd(int fd, short events, int64_t deadline)
     return 0;
 }
 
+
+static int64_t uurbs_now_ms(void)
+{
+    return monotonic_milliseconds();
+}
+
+static int uurbs_wait(int fd, int readable, int64_t deadline)
+{
+    return wait_for_fd(fd, readable ? POLLIN : POLLOUT, deadline);
+}
+
+static long uurbs_pull(int fd, void *buffer, size_t size)
+{
+    return recv(fd, buffer, size, MSG_DONTWAIT);
+}
+
+static long uurbs_push(int fd, const void *buffer, size_t size)
+{
+    return write(fd, buffer, size);
+}
+
+static long uurbs_push_socket(int fd, const void *buffer, size_t size)
+{
+    return send(fd, buffer, size, MSG_NOSIGNAL | MSG_DONTWAIT);
+}
+
+static int uurbs_retriable(void)
+{
+    return errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK;
+}
+
+static int uurbs_stopped(void)
+{
+    return stop_requested;
+}
+
+#include "transport_common.h"
+
 static int read_exact_deadline(int fd, void *buffer, size_t size, int64_t deadline)
 {
-    unsigned char *cursor = buffer;
-
-    while (size > 0) {
-        ssize_t received;
-
-        if (!wait_for_fd(fd, POLLIN, deadline))
-            return stop_requested ? -2 : -1;
-        received = recv(fd, cursor, size, MSG_DONTWAIT);
-        if (received == 0)
-            return 0;
-        if (received < 0) {
-            if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)
-                continue;
-            return -1;
-        }
-        cursor += received;
-        size -= (size_t)received;
-    }
-    return 1;
+    /* R-4: the loop body lives in transport_common.h. */
+    return uurbs_read_exact(fd, buffer, size, deadline);
 }
 
 static int write_all_fd(int fd, const void *buffer, size_t size)
 {
-    const unsigned char *cursor = buffer;
-    const int64_t deadline = monotonic_milliseconds() + io_timeout_ms;
-
-    while (size > 0) {
-        ssize_t written;
-
-        if (!wait_for_fd(fd, POLLOUT, deadline))
-            return 0;
-        written = write(fd, cursor, size);
-
-        if (written <= 0) {
-            if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)
-                continue;
-            return 0;
-        }
-        cursor += written;
-        size -= (size_t)written;
-    }
-    return 1;
+    return uurbs_write_all(fd, buffer, size, uurbs_now_ms() + io_timeout_ms);
 }
 
 static int send_all(int fd, const void *buffer, size_t size)
 {
-    const unsigned char *cursor = buffer;
-    const int64_t deadline = monotonic_milliseconds() + io_timeout_ms;
-
-    while (size > 0) {
-        ssize_t sent;
-
-        if (!wait_for_fd(fd, POLLOUT, deadline))
-            return 0;
-        sent = send(fd, cursor, size, MSG_NOSIGNAL | MSG_DONTWAIT);
-
-        if (sent <= 0) {
-            if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)
-                continue;
-            return 0;
-        }
-        cursor += sent;
-        size -= (size_t)sent;
-    }
-    return 1;
+    return uurbs_push_all(fd, buffer, size,
+                          uurbs_now_ms() + io_timeout_ms, uurbs_push_socket);
 }
 
 /* Output toward a viewer: a stalled controller window must not cost the
  * session — dropping the backlog is cheaper than dropping the shell. */
 static int send_all_viewer(int fd, const void *buffer, size_t size)
 {
-    const unsigned char *cursor = buffer;
-    const int64_t deadline = monotonic_milliseconds() + viewer_send_timeout_ms;
-
-    while (size > 0) {
-        ssize_t sent;
-
-        if (!wait_for_fd(fd, POLLOUT, deadline))
-            return 0;
-        sent = send(fd, cursor, size, MSG_NOSIGNAL | MSG_DONTWAIT);
-
-        if (sent <= 0) {
-            if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)
-                continue;
-            return 0;
-        }
-        cursor += sent;
-        size -= (size_t)sent;
-    }
-    return 1;
+    return uurbs_push_all(fd, buffer, size,
+                          uurbs_now_ms() + viewer_send_timeout_ms,
+                          uurbs_push_socket);
 }
 
 static void close_fd(int *fd);
