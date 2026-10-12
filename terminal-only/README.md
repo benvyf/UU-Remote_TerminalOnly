@@ -53,6 +53,23 @@ ssh -L 6080:127.0.0.1:6080 user@server
 PC 控制端 → 设备 → Terminal 面板 → `PowerShell` 入口（兼容占位标签）→ 得到 Ubuntu 登录 shell。
 手机控制端 Terminal 入口依 App 版本而定；无入口时手机装 JuiceSSH 走 `scripts/uu-ssh` 别名。
 
+## 画布分辨率（预设档位）
+
+`:50` 画布为单模式 Xvfb，默认 1280x800。UU 协议在 Linux 侧不暴露控制端分辨率
+事件，无法逐设备动态适配；用预设档位近似：
+
+```bash
+./terminal-only/canvas-resolution.sh status        # 当前档位与实测尺寸
+./terminal-only/canvas-resolution.sh 1080p         # 预设：default/1080p/1440p/4k
+./terminal-only/canvas-resolution.sh 1600x900      # 或任意合法 WxH（640-16384）
+./terminal-only/canvas-resolution.sh reset         # 恢复默认 1280x800
+```
+
+脚本经 systemd drop-in 修改画布 `-screen` 参数，并同步 `UURB_RESOLUTION`
+（私有画布 :20 的尺寸，relay 中继窗 1:1 缩放的前提），随后重启画布与桥。
+**重启桥会结束进行中的终端会话**（重连开新 shell）；>1440p 会明显增加
+relay 像素量与 CPU 开销，按需选用。
+
 ## 回退完整桌面版
 
 ```bash
