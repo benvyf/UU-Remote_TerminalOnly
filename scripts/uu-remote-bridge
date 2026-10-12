@@ -143,7 +143,19 @@ else
 fi
 export OPENSSL_MODULES='C:\Program Files\FreeRDP\ossl-modules'
 export SDL_RENDER_DRIVER=software
-export UURB_INPUT_ROUTE="$input_route"
+# Terminal-only vnc relay: the injected input bridge DLL only forwards events
+# to the input broker when it sees "rdp-public", but the full rdp-public flow
+# requires an RDP relay. Keep the script-side flow legacy and give the DLL the
+# public semantics only — the broker then injects into the relay canvas via the
+# direct X11 helper (UURB_KEYBOARD_ROUTE=x11). Without this, controller events
+# are injected into the private Wine canvas, where Wine's virtual-desktop
+# pointer grab (explorer /desktop) swallows every pointer event, so the
+# desktop view shows picture but keyboard/mouse never land.
+if [[ "$desktop_relay" == vnc ]]; then
+    export UURB_INPUT_ROUTE="rdp-public"
+else
+    export UURB_INPUT_ROUTE="$input_route"
+fi
 export UU_INPUT_BRIDGE_LOG="C:\\users\\$bridge_user\\Temp\\uu-input-bridge.log"
 export UU_INPUT_BROKER_LOG="C:\\users\\$bridge_user\\Temp\\uu-input-broker.log"
 export UURB_CURSOR_GUARD_LOG="C:\\users\\$bridge_user\\Temp\\uu-cursor-guard.log"
@@ -1765,6 +1777,9 @@ if [[ -n "$x11_input_port" ]]; then
         broker_environment+=("UURB_X11_INPUT_SEMANTIC_ONLY=1")
     fi
 fi
+# The broker keeps the script-side route semantics: the rdp-public export above
+# is consumed by the injected input bridge DLL only.
+broker_environment+=(UURB_INPUT_ROUTE="$input_route")
 "${broker_environment[@]}" /opt/wine-stable/bin/wine "$input_broker_exe" \
     >>"$state_dir/input-broker.log" 2>&1 &
 input_broker_pid=$!
