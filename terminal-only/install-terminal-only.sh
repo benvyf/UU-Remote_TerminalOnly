@@ -68,14 +68,11 @@ sed -e "s/:50/$CANVAS_DISPLAY/g" -e "s/1280x800/$CANVAS_RESOLUTION/g" \
     "$self_dir/uu-canvas-session.service" \
     > "$HOME/.config/systemd/user/uu-canvas-session.service"
 systemctl --user daemon-reload
-# BUG-001(2026-10-13)：已安装的老单元可能是 Restart=on-failure 旧版，
-# Xvfb 干净退出(exit 0)不会自愈。每次安装/重装都强制同步为仓库版本。
+# BUG-001(2026-10-13)：画布单元必须是 Restart=always——Xvfb 干净退出(exit 0)
+# 同样是断服，on-failure 对其无效。上方已无条件按仓库模板生成，此处只断言
+# 生成结果，防仓库模板未来回归（此前的"兜底同步"块因上方无条件覆盖而永不执行）。
 if ! grep -q '^Restart=always' "$HOME/.config/systemd/user/uu-canvas-session.service" 2>/dev/null; then
-    warn "画布单元非 Restart=always，已按仓库版本强制同步（BUG-001）"
-    cp "$self_dir/uu-canvas-session.service" "$HOME/.config/systemd/user/uu-canvas-session.service"
-    sed -i -e "s/:50/$CANVAS_DISPLAY/g" -e "s/1280x800/$CANVAS_RESOLUTION/g" \
-        "$HOME/.config/systemd/user/uu-canvas-session.service"
-    systemctl --user daemon-reload
+    die "BUG-001 防回归：生成的画布单元不是 Restart=always（检查 terminal-only/uu-canvas-session.service）"
 fi
 systemctl --user enable --now uu-canvas-session.service
 
@@ -139,6 +136,18 @@ systemctl --user is-active --quiet uu-canvas-session.service \
 systemctl --user enable --now uu-remote-console.service \
     && log "✓ noVNC console 已启用（http://127.0.0.1:6080）" \
     || warn "✗ uu-remote-console 启用失败：journalctl --user -u uu-remote-console"
+
+# BUG-001 看门狗（核实报告 §6.2）：10 分钟周期链路自检 + 画布重启感知。
+# 失败/重启事件落 ~/.local/state/uu-remote-bridge/watchdog.log，
+# 自检失败以非零码退出，journal 留下 Failed with result 高亮行。
+log "部署画布看门狗（uu-canvas-watchdog.timer，10 分钟周期）"
+for unit in uu-canvas-watchdog.service uu-canvas-watchdog.timer; do
+    install -m 0644 "$self_dir/$unit" "$HOME/.config/systemd/user/$unit"
+done
+systemctl --user daemon-reload
+systemctl --user enable --now uu-canvas-watchdog.timer \
+    && log "✓ 画布看门狗已启用（journalctl --user -u uu-canvas-watchdog.service）" \
+    || warn "✗ 画布看门狗启用失败"
 
 cat <<'EOF'
 

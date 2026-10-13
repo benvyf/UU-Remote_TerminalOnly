@@ -70,6 +70,20 @@ PC 控制端 → 设备 → Terminal 面板 → `PowerShell` 入口（兼容占�
 **重启桥会结束进行中的终端会话**（重连开新 shell）；>1440p 会明显增加
 relay 像素量与 CPU 开销，按需选用。
 
+## 看门狗（BUG-001 后续）
+
+`uu-canvas-watchdog.timer`（用户单元，10 分钟周期，由 `install-terminal-only.sh`
+自动部署启用）跑两件事：
+
+1. **画布重启感知**——比对 `uu-canvas-session` 的 `ExecMainStartTimestamp`，
+   重启事件（自愈/人工干预）写入 `~/.local/state/uu-remote-bridge/watchdog.log`；
+2. **链路自检**——运行 `verify-terminal-only.sh`，失败时 ✗ 摘要落同一日志并以
+   非零码退出（journal 出现 `Failed with result`）。
+
+手动操作：`systemctl --user enable --now uu-canvas-watchdog.timer`；查记录：
+`cat ~/.local/state/uu-remote-bridge/watchdog.log` 或
+`journalctl --user -u uu-canvas-watchdog.service`。首跑只建基线，成功静默。
+
 ## 回退完整桌面版
 
 ```bash

@@ -1,0 +1,12 @@
+# terminal-only/uu-canvas-watchdog.timer — 10 分钟周期触发画布看门狗
+# 画布自愈秒级完成，看门狗的职责是感知"自愈失败/发生过重启"，周期无需过密。
+[Unit]
+Description=Run canvas watchdog every 10 minutes
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=10min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

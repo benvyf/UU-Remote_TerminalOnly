@@ -1,0 +1,10 @@
+# terminal-only/uu-canvas-watchdog.service — 画布看门狗（由 uu-canvas-watchdog.timer 周期触发）
+# BUG-001(2026-10-13) 后续：链路自检 + 画布重启感知，失败以非零码退出供 journal 高亮。
+[Unit]
+Description=UU terminal-only canvas watchdog (link self-check + canvas restart detection)
+After=uu-remote-bridge.service
+
+[Service]
+Type=oneshot
+ExecStart=%h/UU-Remote_TerminalOnly/terminal-only/canvas-watchdog.sh
+SyslogIdentifier=canvas-watchdog

@@ -13,25 +13,23 @@ bad()  { printf '  \033[31m✗\033[0m %s\n' "$*"; fail=$((fail+1)); }
 warn() { printf '  \033[33m!\033[0m %s\n' "$*"; warn_n=$((warn_n+1)); }
 
 echo "── 1. 画布（vnc relay 像素源）──"
+canvas_alive=false
 if DISPLAY="$CANVAS_DISPLAY" timeout 5 xset q >/dev/null 2>&1; then
+    canvas_alive=true
     ok "Xvfb $CANVAS_DISPLAY 在线"
 else
     bad "Xvfb $CANVAS_DISPLAY 无响应（systemctl --user status uu-canvas-session）"
 fi
 # BUG-001 附带修复：SSH 无 DBUS 时 systemctl --user is-active 可能误报，
-# 画布存活以 xdpyinfo/xset 实测为准，单元状态仅作提示。
-if DISPLAY="$CANVAS_DISPLAY" timeout 5 xset q >/dev/null 2>&1; then
+# 画布存活以上方 xset 实测为准（只探一次），单元状态仅作提示。
+if [[ "$canvas_alive" == true ]]; then
     if systemctl --user is-active --quiet uu-canvas-session.service 2>/dev/null; then
         ok "uu-canvas-session.service active"
     else
         warn "Xvfb $CANVAS_DISPLAY 有响应但单元非 active（SSH 无 DBUS 时 systemctl 可能误报；画布本身可用）"
     fi
-else
-    if systemctl --user is-active --quiet uu-canvas-session.service 2>/dev/null; then
-        warn "uu-canvas-session.service active 但 Xvfb 无响应（画布异常，查 journal）"
-    else
-        bad "Xvfb $CANVAS_DISPLAY 无响应且单元未激活（systemctl --user status uu-canvas-session）"
-    fi
+elif systemctl --user is-active --quiet uu-canvas-session.service 2>/dev/null; then
+    warn "uu-canvas-session.service active 但 Xvfb 无响应（画布异常，查 journal）"
 fi
 # BUG-001(2026-10-13)：画布干净退出(exit 0)同样是断服，单元必须是 Restart=always。
 # on-failure 对干净退出无效，曾导致本次客户端下线后桥空转无法自愈。
