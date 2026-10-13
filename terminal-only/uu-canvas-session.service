@@ -4,11 +4,13 @@ Description=UU Remote terminal-only canvas (Xvfb display :50, vnc relay target)
 # bridge 的 vnc relay 以 --desktop-target :50 连接本画布；同用户访问 unix socket 无需 xauth。
 # 上游 bridge 会自拉它自己的私有画布（UU 窗口渲染），本画布只作为 relay 的像素源。
 # 与 terminal-only/rollback-desktop.sh 配套；回退完整桌面版时 disable 并删除本文件。
+# 2026-10-13 BUG-001 修复：Restart=always —— Xvfb 干净退出(exit 0)同样是断服，
+# on-failure 对其无效，曾导致 10-13 客户端下线后桥空转无法自愈。
 
 [Service]
 Type=simple
 ExecStart=/usr/bin/Xvfb :50 -screen 0 1280x800x24 -nolisten tcp -noreset
-Restart=on-failure
+Restart=always
 RestartSec=3
 # 无需 GUI 套件，Xvfb 常驻 ~40MB
 MemoryMax=128M

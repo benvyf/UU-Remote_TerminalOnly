@@ -68,6 +68,15 @@ sed -e "s/:50/$CANVAS_DISPLAY/g" -e "s/1280x800/$CANVAS_RESOLUTION/g" \
     "$self_dir/uu-canvas-session.service" \
     > "$HOME/.config/systemd/user/uu-canvas-session.service"
 systemctl --user daemon-reload
+# BUG-001(2026-10-13)：已安装的老单元可能是 Restart=on-failure 旧版，
+# Xvfb 干净退出(exit 0)不会自愈。每次安装/重装都强制同步为仓库版本。
+if ! grep -q '^Restart=always' "$HOME/.config/systemd/user/uu-canvas-session.service" 2>/dev/null; then
+    warn "画布单元非 Restart=always，已按仓库版本强制同步（BUG-001）"
+    cp "$self_dir/uu-canvas-session.service" "$HOME/.config/systemd/user/uu-canvas-session.service"
+    sed -i -e "s/:50/$CANVAS_DISPLAY/g" -e "s/1280x800/$CANVAS_RESOLUTION/g" \
+        "$HOME/.config/systemd/user/uu-canvas-session.service"
+    systemctl --user daemon-reload
+fi
 systemctl --user enable --now uu-canvas-session.service
 
 canvas_ready=false

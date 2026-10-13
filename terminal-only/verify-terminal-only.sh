@@ -18,10 +18,27 @@ if DISPLAY="$CANVAS_DISPLAY" timeout 5 xset q >/dev/null 2>&1; then
 else
     bad "Xvfb $CANVAS_DISPLAY 无响应（systemctl --user status uu-canvas-session）"
 fi
-if systemctl --user is-active --quiet uu-canvas-session.service 2>/dev/null; then
-    ok "uu-canvas-session.service active"
+# BUG-001 附带修复：SSH 无 DBUS 时 systemctl --user is-active 可能误报，
+# 画布存活以 xdpyinfo/xset 实测为准，单元状态仅作提示。
+if DISPLAY="$CANVAS_DISPLAY" timeout 5 xset q >/dev/null 2>&1; then
+    if systemctl --user is-active --quiet uu-canvas-session.service 2>/dev/null; then
+        ok "uu-canvas-session.service active"
+    else
+        warn "Xvfb $CANVAS_DISPLAY 有响应但单元非 active（SSH 无 DBUS 时 systemctl 可能误报；画布本身可用）"
+    fi
 else
-    warn "uu-canvas-session.service 未激活（若用其他方式提供画布可忽略）"
+    if systemctl --user is-active --quiet uu-canvas-session.service 2>/dev/null; then
+        warn "uu-canvas-session.service active 但 Xvfb 无响应（画布异常，查 journal）"
+    else
+        bad "Xvfb $CANVAS_DISPLAY 无响应且单元未激活（systemctl --user status uu-canvas-session）"
+    fi
+fi
+# BUG-001(2026-10-13)：画布干净退出(exit 0)同样是断服，单元必须是 Restart=always。
+# on-failure 对干净退出无效，曾导致本次客户端下线后桥空转无法自愈。
+if systemctl --user show uu-canvas-session.service --property=Restart 2>/dev/null | grep -q 'Restart=always'; then
+    ok "uu-canvas-session Restart=always（干净退出亦自愈）"
+else
+    bad "uu-canvas-session 非 Restart=always（干净退出不自愈，见 BUG-001；重跑 install-terminal-only.sh 同步）"
 fi
 
 echo "── 2. 上游桥服务 ──"
