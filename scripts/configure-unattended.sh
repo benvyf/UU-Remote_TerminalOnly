@@ -146,9 +146,12 @@ restore_gdm_state() {
           "$(sudo crudini --get "$gdm_config" daemon AutomaticLogin \
         2>/dev/null || true)" == "$bridge_user" ]]; then
         for key in AutomaticLoginEnable AutomaticLogin; do
-            present="$(state_get "${key}Present")"
-            if [[ "$present" == true ]]; then
-                value="$(state_get "$key")"
+            # 状态文件可能因安装中断缺键（remember_gdm_state 分多次 sudo crudini
+            # 写入）：缺键按"未记录"处理 → 回退为删除 autologin 键，宁关勿留；
+            # present=true 但值缺失同样删除，避免写出空 AutomaticLogin=（审查 2026-10-18）
+            present="$(state_get "${key}Present" 2>/dev/null || printf false)"
+            value="$(state_get "$key" 2>/dev/null || true)"
+            if [[ "$present" == true && -n "$value" ]]; then
                 sudo crudini --set "$gdm_config" daemon "$key" "$value"
             else
                 sudo crudini --del "$gdm_config" daemon "$key" \
@@ -163,7 +166,8 @@ restore_gdm_state() {
           true && -e /dev/tpmrm0 ]]; then
         sudo setfacl -x "u:$bridge_user" /dev/tpmrm0 2>/dev/null || true
     fi
-    if [[ "$(state_get TssMember)" == false ]] && account_has_tss; then
+    # TssMember 缺键时默认 true（不主动改组）；只有明确记录 false 才回退
+    if [[ "$(state_get TssMember 2>/dev/null || printf true)" == false ]] && account_has_tss; then
         sudo gpasswd --delete "$bridge_user" tss >/dev/null
     fi
     sudo rm -f "$state_file"

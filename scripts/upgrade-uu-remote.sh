@@ -360,6 +360,17 @@ path.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")
 os.chmod(path, 0o600)
 PY
     /usr/bin/ln -sfn "$backup_dir" "$state_dir/latest"
+    # 事务备份是完整运行时副本、无限增长：按目录名（时间戳字典序=时间序）
+    # 只保留最近 5 份（审查 2026-10-18）
+    local -a transactions=()
+    local index
+    for index in "$state_dir"/transactions/*; do
+        [[ -d "$index" ]] || continue
+        transactions+=("$index")
+    done
+    for ((index = 0; index < ${#transactions[@]} - 5; index++)); do
+        rm -rf "${transactions[index]}"
+    done
     log "local runtime rollback copy: $backup_dir"
 }
 

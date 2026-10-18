@@ -6,7 +6,7 @@ umask 077
 repo_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/runtime-settings.sh
 source "$repo_dir/scripts/runtime-settings.sh"
-bridge_user="${USER:-$(id -un)}"
+bridge_user="$(id -un)"
 config_dir="$HOME/.config/uu-remote-bridge"
 environment_file="$config_dir/environment"
 saved_wine_prefix="$(
@@ -486,6 +486,7 @@ install_winehq() {
     source /etc/os-release
     codename="${VERSION_CODENAME:?Ubuntu codename is unavailable}"
     temporary="$(mktemp -d)"
+    winehq_temporary="$temporary"
 
     sudo dpkg --add-architecture i386
     curl -fsSL https://dl.winehq.org/wine-builds/winehq.key \
@@ -504,6 +505,7 @@ install_winehq() {
     sudo apt-get update
     sudo apt-get install -y --install-recommends winehq-stable
     rm -rf "$temporary"
+    winehq_temporary=""
 }
 
 install_packages() {
@@ -720,9 +722,14 @@ if [[ "$prefix_only" == false ]] &&
    "${systemctl_user[@]}" is-active --quiet uu-remote-bridge.service; then
     bridge_was_active=true
 fi
+winehq_temporary=""
 restore_bridge_after_failure() {
     local status=$?
 
+    # install_winehq 的 mktemp 目录在失败路径也要清掉（审查 2026-10-18）
+    if [[ -n "$winehq_temporary" && -d "$winehq_temporary" ]]; then
+        rm -rf "$winehq_temporary"
+    fi
     if ((status != 0)) && [[ "$bridge_was_active" == true ]]; then
         "${systemctl_user[@]}" start uu-remote-bridge.service \
             >/dev/null 2>&1 || true
@@ -768,8 +775,9 @@ if [[ ! -f "$uu_dir/GameViewer.exe" || "$upgrade_existing" == true ]]; then
         sha256sum -c -
     mkdir -p "$wine_prefix"
     if [[ "$fresh_install" == true ]]; then
-        "$wine_bin" wineboot -u
-        "$wine_bin" winecfg -v win10
+        # wineboot/winecfg 首次初始化偶发挂死（网络探测/更新检查），限时防无限阻塞
+        timeout 15m "$wine_bin" wineboot -u
+        timeout 10m "$wine_bin" winecfg -v win10
     else
         if [[ ! -f "$installed_manifest" ]]; then
             printf 'Cannot upgrade without the currently installed release manifest.\n' >&2
@@ -801,7 +809,8 @@ if [[ ! -f "$uu_dir/GameViewer.exe" || "$upgrade_existing" == true ]]; then
             fi
         done
     fi
-    "$wine_bin" "$uu_installer" /S
+    # NSIS 静默安装限时：挂死则中止并走 EXIT 恢复钩子
+    timeout 30m "$wine_bin" "$uu_installer" /S
     stop_wine_prefix
 fi
 if [[ ! -f "$server_exe" || ! -f "$healthd_exe" ]]; then

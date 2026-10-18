@@ -3,7 +3,7 @@
 set -Eeuo pipefail
 
 repo_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-bridge_user="${USER:-$(id -un)}"
+bridge_user="$(id -un)"
 environment_file="$HOME/.config/uu-remote-bridge/environment"
 saved_wine_prefix="$(
     if [[ -f "$environment_file" ]]; then
@@ -122,6 +122,13 @@ if [[ -f "$HOME/.config/uu-remote-bridge/login-keyring-password.cred" ]] || \
    "${systemctl_user[@]}" is-enabled --quiet uu-keyring-unlock.service; then
     "$repo_dir/scripts/configure-unattended.sh" disable
 fi
+# 画布/看门狗（terminal-only 安装物）与共享物理 VNC 一并清理：否则回滚后
+# 看门狗每 10 分钟因画布消失红一次，"已卸载"主机仍跑着共享 VNC（审查 2026-10-18）
+"${systemctl_user[@]}" disable --now uu-canvas-watchdog.timer \
+    >/dev/null 2>&1 || true
+"${systemctl_user[@]}" disable --now uu-canvas-watchdog.service \
+    uu-canvas-session.service uu-shared-physical-vnc.service \
+    >/dev/null 2>&1 || true
 "$repo_dir/scripts/stop-wine-prefix" \
     "$wine_prefix" /opt/wine-stable/bin/wineserver || true
 
@@ -141,7 +148,7 @@ if [[ -f "$terminal_proxy" ]] &&
 fi
 if [[ "$purge" == false && -f "$wine_prefix/system.reg" ]]; then
     WINEPREFIX="$wine_prefix" WINEDEBUG=-all \
-        /opt/wine-stable/bin/wine reg add \
+        timeout 120 /opt/wine-stable/bin/wine reg add \
         'HKEY_LOCAL_MACHINE\System\CurrentControlSet\Services\winebth' \
         /v Start /t REG_DWORD /d 3 /f >/dev/null
     "$repo_dir/scripts/stop-wine-prefix" \
@@ -167,7 +174,18 @@ rm -f \
     "$HOME/.local/bin/uu-keyring-unlock" \
     "$HOME/.config/systemd/user/uu-keyring-unlock.service" \
     "$HOME/.config/systemd/user/uu-remote-bridge.service" \
-    "$HOME/.config/systemd/user/uu-remote-console.service"
+    "$HOME/.config/systemd/user/uu-remote-console.service" \
+    "$HOME/.config/systemd/user/uu-canvas-session.service" \
+    "$HOME/.config/systemd/user/uu-canvas-watchdog.service" \
+    "$HOME/.config/systemd/user/uu-canvas-watchdog.timer" \
+    "$HOME/.config/systemd/user/uu-shared-physical-vnc.service" \
+    "$HOME/.local/bin/uu-shared-physical-vnc"
+# 更新器 libexec 运行时（configure-updater.sh disable 不移除脚本树）
+rm -rf "$HOME/.local/libexec/uu-remote-updater"
+if [[ "$purge" == true ]]; then
+    rm -rf "${XDG_STATE_HOME:-$HOME/.local/state}/uu-remote-bridge" \
+        "${XDG_STATE_HOME:-$HOME/.local/state}/uu-remote-updater"
+fi
 /usr/bin/python3 - "$HOME/.config/systemd/user" <<'PY_REMOVE_MEMORY_BUDGET'
 import sys
 from pathlib import Path
