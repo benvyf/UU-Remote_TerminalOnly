@@ -11,7 +11,7 @@
 #   ./terminal-only/canvas-resolution.sh status        # 当前档位与实测尺寸
 #   ./terminal-only/canvas-resolution.sh 1080p         # 预设档位
 #   ./terminal-only/canvas-resolution.sh 1600x900      # 任意合法 WxH
-#   ./terminal-only/canvas-resolution.sh reset         # 恢复单元默认 1280x800
+#   ./terminal-only/canvas-resolution.sh reset         # 移除 drop-in，恢复单元配置的分辨率
 #
 # 注意：切换会重启 uu-canvas-session 与 uu-remote-bridge；进行中的终端会话
 # 将结束（跨桥重启不保留锚定会话，重连即开新 shell）。>1440p 会明显增加
@@ -19,13 +19,15 @@
 
 set -Eeuo pipefail
 
-repo_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 canvas_unit="uu-canvas-session.service"
 unit_file="$HOME/.config/systemd/user/$canvas_unit"
 dropin_dir="$HOME/.config/systemd/user/$canvas_unit.d"
 dropin_file="$dropin_dir/10-canvas-resolution.conf"
 environment_file="$HOME/.config/uu-remote-bridge/environment"
-canvas_display="${CANVAS_DISPLAY:-:50}"
+# 画布 display 优先级：调用者显式指定 > 安装时持久化值 > 默认 :50。
+# 不读持久化值会导致自定义 display 的部署被本脚本把 ExecStart 重绑回 :50。
+saved_canvas_display="$(sed -n 's/^UURB_CANVAS_DISPLAY=//p' "$environment_file" 2>/dev/null | tail -n 1)"
+canvas_display="${CANVAS_DISPLAY:-${saved_canvas_display:-:50}}"
 default_geometry="1280x800"
 
 ok()   { printf '  \033[32m✓\033[0m %s\n' "$*"; }
@@ -37,7 +39,7 @@ usage() {
 用法：canvas-resolution.sh [status|reset|<预设名|WxH>]
 
   status             显示当前档位（drop-in / 环境文件 / 实测尺寸）
-  reset              恢复单元默认 1280x800
+  reset              移除 drop-in，恢复单元文件配置的分辨率
   预设名：default(1280x800) 1080p(1920x1080) 1440p(2560x1440) 4k(3840x2160)
   或任意合法 WxH（宽 640-16384，高 480-16384）
 
@@ -72,12 +74,19 @@ memory_limit_mb() {
     echo $(( (mem + 31) / 32 * 32 ))
 }
 
+# 单元文件 ExecStart 中的分辨率（安装时由 CANVAS_RESOLUTION 写入，reset 的回退目标）
+unit_geometry() {
+    sed -n 's/^ExecStart=\/usr\/bin\/Xvfb .*-screen 0 \([0-9]*x[0-9]*\)x24 .*/\1/p' \
+        "$unit_file" 2>/dev/null | head -1
+}
+
 current_geometry() {
     local mode=""
     if [[ -f "$dropin_file" ]]; then
         mode="$(sed -n 's/^ExecStart=\/usr\/bin\/Xvfb .*-screen 0 \([0-9]*x[0-9]*\)x24 .*/\1/p' \
             "$dropin_file" | head -1)"
     fi
+    [[ -z "$mode" ]] && mode="$(unit_geometry)"
     echo "${mode:-$default_geometry}"
 }
 
@@ -130,10 +139,10 @@ update_environment() {
 }
 
 reload_and_restart() {
-    local geometry="$1" i dims="" line
+    local geometry="$1" dims="" line
     systemctl --user daemon-reload
     systemctl --user restart uu-canvas-session.service
-    for i in $(seq 1 30); do
+    for _ in $(seq 1 30); do
         dims="$(actual_geometry)"
         [[ "$dims" == "$geometry" ]] && break
         sleep 0.5
@@ -144,7 +153,7 @@ reload_and_restart() {
         warn "画布尺寸未确认（xdpyinfo=${dims:-无响应}）：journalctl --user -u uu-canvas-session -n 30"
     fi
     systemctl --user restart uu-remote-bridge.service
-    for i in $(seq 1 60); do
+    for _ in $(seq 1 60); do
         systemctl --user is-active --quiet uu-remote-bridge.service && break
         sleep 0.5
     done
@@ -202,11 +211,14 @@ cmd_apply() {
 }
 
 cmd_reset() {
+    local unit_geometry
+    unit_geometry="$(unit_geometry)"
+    unit_geometry="${unit_geometry:-$default_geometry}"
     rm -f "$dropin_file"
     rmdir "$dropin_dir" 2>/dev/null || true
-    update_environment "$default_geometry"
-    ok "已移除 drop-in，恢复单元默认 $default_geometry"
-    reload_and_restart "$default_geometry"
+    update_environment "$unit_geometry"
+    ok "已移除 drop-in，恢复单元配置的 $unit_geometry"
+    reload_and_restart "$unit_geometry"
     echo
     cmd_status
 }
