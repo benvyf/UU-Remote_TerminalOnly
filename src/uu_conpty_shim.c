@@ -21,6 +21,7 @@
  * ends every client at once when PSEUDOCONSOLE_INHERIT_CURSOR is set, which
  * conpty_bridge always passes, so that flag is dropped. */
 #define WIN32_LEAN_AND_MEAN
+#define _WIN32_WINNT 0x0600 /* CancelIoEx (Vista+) */
 #include <winsock2.h>
 #include <windows.h>
 
@@ -501,8 +502,14 @@ void WINAPI shim_close(pseudo_console console)
         console = NULL;
     }
     if (console == NULL && session.console != NULL) {
-        close_handle(&session.bridge_input);
-        close_handle(&session.bridge_output);
+        /* Cancel blocking ReadFile/WriteFile the pumps may still have in
+         * flight on the bridge pipe handles BEFORE joining them: closing a
+         * handle another thread is blocked on is undefined on Windows (the
+         * value can be recycled mid-I/O). CancelIoEx makes the pending call
+         * fail immediately, the pumps observe EOF/error and exit, and the
+         * join below stays bounded (review 2026-10-18). */
+        CancelIoEx(session.bridge_input, NULL);
+        CancelIoEx(session.bridge_output, NULL);
         close_handle(&session.console_input);
         {
             HANDLE live[3];
@@ -513,6 +520,8 @@ void WINAPI shim_close(pseudo_console console)
                     live[live_count++] = session.threads[index];
             if (live_count > 0)
                 WaitForMultipleObjects((DWORD)live_count, live, TRUE, 2000);
+            close_handle(&session.bridge_input);
+            close_handle(&session.bridge_output);
             for (int index = 0; index < 3; index++)
                 close_handle(&session.threads[index]);
         }

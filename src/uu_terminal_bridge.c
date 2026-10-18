@@ -790,9 +790,11 @@ static int hold_session(int listener, int client, const struct handshake *handsh
             fprintf(stderr, "terminal session anchor closed name=%s\n", handshake->name);
             /* A viewer that is still attached keeps the session alive: the
              * pane process can disappear (controller-driven tree cleanup)
-             * without the terminal being closed. */
-            if (attach < 0)
-                break;
+             * without the terminal being closed. When the viewer is gone
+             * too, fall through to the anchored grace window below instead
+             * of ending the session: anchor and viewer often close within
+             * one poll cycle, and a viewer-first disconnect must still get
+             * its reconnect grace (review 2026-10-18). */
             anchored = 0;
         }
         if (!anchored && attach < 0) {
