@@ -34,7 +34,8 @@ class DesktopToolTests(unittest.TestCase):
 
     def test_username_is_one_value_and_control_characters_rejected(self):
         self.assertEqual(tool.validate_username("DOMAIN\\name"), "DOMAIN\\name")
-        for username in ("a\nb", "a\0b", "x" * 257):
+        for username in ("a\nb", "a\0b", "x" * 257,
+                         "a b", "a\tb", 'a"b', "a'b"):
             with self.assertRaises(ValueError):
                 tool.validate_username(username)
 

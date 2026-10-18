@@ -462,7 +462,10 @@ class Config:
                 "the updater needs an absolute executable Codex path; "
                 "rerun configure-updater.sh enable"
             )
-        max_used_percent = int(raw.get("codex_max_used_percent", 20))
+        try:
+            max_used_percent = int(raw.get("codex_max_used_percent", 20))
+        except (TypeError, ValueError) as error:
+            raise UpdateError("codex_max_used_percent must be an integer") from error
         if not 0 <= max_used_percent <= 100:
             raise UpdateError("codex_max_used_percent must be between 0 and 100")
         auto_reinstall = raw.get("auto_reinstall_known_good", False)
@@ -1425,7 +1428,7 @@ class Manager:
     def reinstall_known_good(self) -> dict[str, Any]:
         if self.promotion_marker_path.exists():
             raise UpdateError("an interrupted transaction must be recovered before reinstalling")
-        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
         work = self.state_dir / "reinstalls" / stamp
         checkout = self.track_checkout(work / "repo")
         log_path = work / "reinstall.log"
@@ -1757,7 +1760,7 @@ class Manager:
                 "attempted": False,
                 "reason": "the service-manager probe was indeterminate",
             }
-            identity = datetime.now().strftime("%Y%m%d-%H%M")
+            identity = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M")
             self.queue_task("runtime-health", identity, details)
             return
         if not self.config.auto_reinstall_known_good:
@@ -1776,7 +1779,7 @@ class Manager:
                 "attempted": False,
                 "reason": "automatic live recovery is disabled",
             }
-            identity = datetime.now().strftime("%Y%m%d-%H%M")
+            identity = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M")
             self.queue_task("runtime-health", identity, details)
             return
         restarted = self.restart_bridge()
@@ -1802,7 +1805,7 @@ class Manager:
             return
         details = self.runtime_context(first, restarted["health"])
         details["known_good_reinstall"] = reinstall
-        identity = datetime.now().strftime("%Y%m%d-%H%M")
+        identity = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M")
         self.queue_task("runtime-health", identity, details)
 
     def load_pending(self) -> dict[str, Any] | None:
@@ -1897,7 +1900,11 @@ class Manager:
 
     def save_task(self, task: dict[str, Any]) -> None:
         task["updated_at"] = utc_now()
-        task_dir = self.tasks_dir / str(task["id"])
+        # 与 promotion_paths 同一净化：id 拼路径不得绕过 task_name（审查 2026-10-18）
+        task_id = task_name(str(task.get("id", "")))
+        if not task_id:
+            raise UpdateError("task identifier is missing")
+        task_dir = self.tasks_dir / task_id
         atomic_json(task_dir / "task.json", task)
         atomic_json(self.pending_path, task)
 
@@ -2306,7 +2313,7 @@ class Manager:
             retired_root = self.tasks_dir / "retired"
             retired_root.mkdir(parents=True, exist_ok=True, mode=0o700)
             retired = retired_root / (
-                f"{task_id}-{datetime.now().strftime('%Y%m%dT%H%M%S')}"
+                f"{task_id}-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S')}"
             )
             task_dir.replace(retired)
             try:

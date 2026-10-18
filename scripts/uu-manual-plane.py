@@ -206,6 +206,8 @@ def main():
             record.update(phase='FAILED_HELD' if failed else 'STOPPING_HELD')
             try:write_record(args.ready,record)
             except OSError:pass
+            # 有意无限等待：父桥只在 prefix 完全停止后写 marker（见上注释），
+            # 本助手提前退出会让桌面记录停在过期状态
             while True:
                 try:
                     marker=private_record(args.prefix_stopped)
@@ -219,7 +221,7 @@ def main():
             if redirected:comp.XCompositeUnredirectSubwindows(d,root,1)
             x.XSync(d,0);x.XCloseDisplay(d)
         if properties:properties.close()
-        if args.ready.exists():args.ready.unlink()
+        args.ready.unlink(missing_ok=True)
     return 1 if failed else 0
 
 if __name__=='__main__':

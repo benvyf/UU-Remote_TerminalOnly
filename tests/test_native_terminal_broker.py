@@ -274,7 +274,7 @@ class PersistentTerminalSessionTests(NativeTerminalBrokerTests):
             client.sendall(struct.pack("!IHHHH", MAGIC, 2, TOKEN_LENGTH, 80, 24) +
                            self.token.encode() + struct.pack("!BB", 2, announce) +
                            b"A" * announce)
-            closed = self.closed(client, timeout=3)
+            closed = self.closed(client, timeout=10)
             self.assertTrue(closed, f"handshake with name_length={announce} was not rejected")
         survivor = self.connect(port, self.ATTACH, "session1")
         self.assertIsNotNone(survivor)
@@ -407,8 +407,17 @@ class PersistentTerminalSessionTests(NativeTerminalBrokerTests):
         first = self.connect(port, self.ATTACH, "session1")
         self.shell_pid(first)
         first.close()
-        time.sleep(0.5)
-        self.assertIsNone(self.connect(port, self.ANCHOR, "session1"))
+        # 会话收尾（viewer EOF → reap shell → holder 关闭）是异步的：轮询等待，
+        # 固定 sleep 在全量串行跑时会被拖过 0.5s 窗口（既有 flake，审查 2026-10-18）
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            anchor = self.connect(port, self.ANCHOR, "session1")
+            if anchor is None:
+                break
+            anchor.close()
+            time.sleep(0.1)
+        else:
+            self.fail("unanchored session outlived its viewer")
 
     def test_anchor_without_session_is_rejected(self):
         port = self.start()

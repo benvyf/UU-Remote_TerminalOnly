@@ -53,8 +53,15 @@ def validate_address(address):
 
 
 def validate_username(username):
-    if len(username) > 256 or any(ord(character) < 32 or ord(character) == 127 for character in username):
-        raise ValueError("用户名不能包含控制字符。")
+    if len(username) > 256 or any(
+        ord(character) < 32
+        or ord(character) == 127
+        or character.isspace()
+        or character in "\"'"
+        for character in username
+    ):
+        # 空白/引号经 x-terminal-emulator -e 等遗留接口可能被二次拆参
+        raise ValueError("用户名不能包含控制字符、空白或引号。")
     return username
 
 
