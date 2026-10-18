@@ -5,6 +5,9 @@ Description=UU terminal-only canvas watchdog (link self-check + canvas restart d
 After=uu-remote-bridge.service
 
 [Service]
+# oneshot 默认禁用启动超时（systemd.service(5)），verify 挂起会永久卡死本单元：
+# 显式设置后生效；脚本内 verify 另有 timeout 480s 兜底（双层）。
 Type=oneshot
+TimeoutStartSec=8min
 ExecStart=%h/UU-Remote_TerminalOnly/terminal-only/canvas-watchdog.sh
 SyslogIdentifier=canvas-watchdog

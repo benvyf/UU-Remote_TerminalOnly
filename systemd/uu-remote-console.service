@@ -1,14 +1,15 @@
 [Unit]
 Description=Local noVNC console for UU Remote
 After=default.target uu-remote-bridge.service
-StartLimitIntervalSec=60
-StartLimitBurst=5
+# 无头登录通道，可用性优先：与桥同款 Restart=always + 关闭 StartLimit，
+# 避免 5 次快速崩溃后永久 failed 导致无法登录修复（审查 2026-10-18）
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
 EnvironmentFile=-%h/.config/uu-remote-bridge/environment
 ExecStart=%h/.local/bin/uu-remote-console serve
-Restart=on-failure
+Restart=always
 RestartSec=5
 TimeoutStopSec=10
 KillMode=control-group

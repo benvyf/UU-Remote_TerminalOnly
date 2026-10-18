@@ -8,6 +8,14 @@ PartOf=graphical-session.target
 [Service]
 Type=oneshot
 ExecStart=%h/.local/bin/uu-keyring-unlock
+# 解锁成功后踢桥一次：桥若在解锁重试期间已带失效 keyring 连接或进入失败态，
+# 拿到新解锁后仍能被拉起。正常开机路径桥尚未启动，try-restart 为无操作
+# （审查 2026-10-18）。
+# break-glass：密码环密码本身变更导致解锁永远失败时，手工处理——
+#   systemctl --user stop uu-remote-bridge.service
+#   rm ~/.config/uu-remote-bridge/login-keyring-password.cred
+#   ./scripts/configure-unattended.sh enable   # 重新写入新密码
+ExecStartPost=/usr/bin/systemctl --user try-restart uu-remote-bridge.service
 LoadCredentialEncrypted=login-keyring-password:%h/.config/uu-remote-bridge/login-keyring-password.cred
 RemainAfterExit=yes
 TimeoutStartSec=150

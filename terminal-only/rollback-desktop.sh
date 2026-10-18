@@ -6,6 +6,14 @@ set -euo pipefail
 
 log() { printf '\033[1;34m[rollback]\033[0m %s\n' "$*"; }
 
+if systemctl --user list-unit-files 2>/dev/null | grep -q '^uu-canvas-watchdog'; then
+    systemctl --user disable --now uu-canvas-watchdog.timer \
+        uu-canvas-watchdog.service || true
+    rm -f "$HOME/.config/systemd/user/uu-canvas-watchdog.service" \
+        "$HOME/.config/systemd/user/uu-canvas-watchdog.timer"
+    log "画布看门狗单元已移除"
+fi
+
 if systemctl --user list-unit-files 2>/dev/null | grep -q '^uu-canvas-session'; then
     systemctl --user disable --now uu-canvas-session.service || true
     rm -f "$HOME/.config/systemd/user/uu-canvas-session.service"

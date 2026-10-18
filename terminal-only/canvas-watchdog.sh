@@ -36,8 +36,20 @@ if [[ -n "$main_ts" && "$main_ts" != "$prev_ts" ]]; then
 fi
 
 # ── 2) 链路自检（verify 失败时自身 exit 1）──────────────────
-out="$("$repo_dir/terminal-only/verify-terminal-only.sh" 2>&1)"
+# 画布/桥崩溃自愈窗口（RestartSec=3-30s）内 verify 可能瞬时失败：先宽限 20s
+# 重试一次，仍失败才落告警，避免把自愈窗口误报训练成"忽略告警"（审查 2026-10-18）。
+# timeout 480s 兜底 verify 整体挂起（oneshot 无默认启动超时，见单元注释）。
+out="$(timeout 480 "$repo_dir/terminal-only/verify-terminal-only.sh" 2>&1)"
 rc=$?
+if (( rc != 0 )); then
+    sleep 20
+    out="$(timeout 480 "$repo_dir/terminal-only/verify-terminal-only.sh" 2>&1)"
+    rc=$?
+    if (( rc == 0 )); then
+        log_line "verify 首次失败但 20s 后重试通过（自愈窗口内瞬时故障），本轮不告警"
+        exit 0
+    fi
+fi
 if (( rc != 0 )); then
     fail_n="$(grep -c '✗' <<<"$out" || true)"
     log_line "verify-terminal-only 失败（rc=$rc，$fail_n 项失败），摘要："

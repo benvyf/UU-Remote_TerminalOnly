@@ -1,4 +1,11 @@
 [Unit]
+# StartLimit：RestartSec=3 下崩坏循环可持续 ~20 次重启/分钟，默认 StartLimit
+# 永不触发 → 永久性坏配置（如非法分辨率参数）每天重启 ~2.8 万次刷爆 journal。
+# 60s 内第 10 次重启即熔断进 failed，需人工介入（审查 2026-10-18）。
+# 恢复：systemctl --user reset-failed uu-canvas-session.service && \
+#       systemctl --user start uu-canvas-session.service
+StartLimitIntervalSec=60
+StartLimitBurst=10
 Description=UU Remote terminal-only canvas (Xvfb display :50, vnc relay target)
 # 用户级单元（安装到 bridge 用户的 ~/.config/systemd/user/）。
 # bridge 的 vnc relay 以 --desktop-target :50 连接本画布；同用户访问 unix socket 无需 xauth。

@@ -65,6 +65,14 @@ case "$CANVAS_RESOLUTION" in
 esac
 log "部署画布用户单元（Xvfb $CANVAS_DISPLAY，$CANVAS_RESOLUTION）"
 install -d -m 0755 "$HOME/.config/systemd/user"
+# 记录重装前单元内容：分辨率/显示号变更时 enable --now 幂等无操作，运行中的
+# 画布拿不到新参数（审查 2026-10-18），下方据此 try-restart。
+canvas_unit_was_installed=false
+canvas_unit_old_hash=""
+if [[ -f "$HOME/.config/systemd/user/uu-canvas-session.service" ]]; then
+    canvas_unit_was_installed=true
+    canvas_unit_old_hash="$(sha256sum "$HOME/.config/systemd/user/uu-canvas-session.service" | awk '{print $1}')"
+fi
 sed -e "s/:50/$CANVAS_DISPLAY/g" -e "s/1280x800/$CANVAS_RESOLUTION/g" \
     "$self_dir/uu-canvas-session.service" \
     > "$HOME/.config/systemd/user/uu-canvas-session.service"
@@ -76,6 +84,13 @@ if ! grep -q '^Restart=always' "$HOME/.config/systemd/user/uu-canvas-session.ser
     die "BUG-001 防回归：生成的画布单元不是 Restart=always（检查 terminal-only/uu-canvas-session.service）"
 fi
 systemctl --user enable --now uu-canvas-session.service
+
+# 重装且单元内容变化 → 重启画布使新分辨率/显示号生效（首次安装无需）
+if [[ "$canvas_unit_was_installed" == true ]] && \
+   [[ "$canvas_unit_old_hash" != "$(sha256sum "$HOME/.config/systemd/user/uu-canvas-session.service" | awk '{print $1}')" ]]; then
+    log "画布单元参数变化，重启画布使新参数生效"
+    systemctl --user try-restart uu-canvas-session.service
+fi
 
 canvas_ready=false
 for _ in {1..30}; do
