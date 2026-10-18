@@ -5,7 +5,10 @@
 set -uo pipefail
 
 repo_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-CANVAS_DISPLAY="${CANVAS_DISPLAY:-:50}"
+# 画布 display 优先级：调用者显式指定 > 安装时持久化值 > 默认 :50
+saved_display="$(sed -n 's/^UURB_CANVAS_DISPLAY=//p' \
+    "$HOME/.config/uu-remote-bridge/environment" 2>/dev/null | tail -n 1)"
+CANVAS_DISPLAY="${CANVAS_DISPLAY:-${saved_display:-:50}}"
 pass=0; fail=0; warn_n=0
 
 ok()   { printf '  \033[32m✓\033[0m %s\n' "$*"; pass=$((pass+1)); }
@@ -62,6 +65,12 @@ if [[ -s "$runtime_dir/x11-input.port" ]] && pgrep -x uu-x11-input >/dev/null 2>
     ok "x11-input helper 在线（XTEST 直注画布，port $(cat "$runtime_dir/x11-input.port")）"
 else
     bad "x11-input helper 未运行——控制端键鼠不可用（桥日志应有 'direct X11 injection' 一行）"
+fi
+# 无 linger：SSH 断开 10s 后用户单元全部停止，重启也不自启（无头部署生命线）
+if [[ -e "/var/lib/systemd/linger/$(id -un)" ]]; then
+    ok "linger 已启用（断连/重启后用户单元存活）"
+else
+    bad "linger 未启用（sudo loginctl enable-linger $(id -un)）——SSH 断开/重启后服务不会存活"
 fi
 
 echo "── 3. UU 进程与在线态 ──"

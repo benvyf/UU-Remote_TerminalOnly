@@ -48,9 +48,10 @@ log "资源与网络检查通过（内存 ${free_mb}MB / 磁盘 ${disk_gb}GB）"
 
 # ── 2. 画布先行：装 Xvfb 并启动用户单元 ────────────────────────
 # 先于上游安装启动画布，保证桥首启时 vnc relay 立即有像素源可用。
-log "安装 Xvfb（画布依赖）"
-sudo apt-get update -y
-sudo apt-get install -y --no-install-recommends xvfb x11-utils
+log "安装 Xvfb 与 mingw 交叉编译器（画布依赖 + conpty shim 编译链）"
+# gcc-mingw-w64-x86-64 必须在此提前安装：第 3 步编译 shim 需要它，而此前它只由
+# 上游 install.sh 安装（执行顺序在本编译之后），干净主机上一键安装必然失败
+sudo apt-get install -y --no-install-recommends xvfb x11-utils gcc-mingw-w64-x86-64
 
 case "$CANVAS_DISPLAY" in
     :[0-9]) ;;
@@ -90,6 +91,8 @@ log "画布 $CANVAS_DISPLAY 就绪"
 # ── 3. 上游安装（vnc relay + 精确 target + 跳过首次登录）───────
 log "编译 conpty shim（mingw；绕开 build-compat.sh 的 FreeRDP 配方锁）"
 mkdir -p build/compat
+command -v x86_64-w64-mingw32-gcc >/dev/null 2>&1 \
+    || die "未找到 x86_64-w64-mingw32-gcc（gcc-mingw-w64-x86-64 应已随第 2 步安装）"
 x86_64-w64-mingw32-gcc -std=c11 -O2 -Wall -Wextra -Werror \
     -Wl,--no-insert-timestamp -shared -I src \
     -o build/compat/uu-conpty.dll \
@@ -109,6 +112,26 @@ cd "$repo_dir"
     --skip-account-login \
     --no-start
 
+# 持久化画布参数：systemd 用户单元不继承安装 shell 的环境，verify/watchdog/
+# canvas-resolution 都以环境文件为准——不落盘则自定义 display/分辨率会被这些
+# 工具静默回落为 :50/1280x800（看门狗永远探测错 display；切档会重绑 ExecStart）
+runtime_env="$HOME/.config/uu-remote-bridge/environment"
+if [[ ! -f "$runtime_env" ]]; then
+    mkdir -p "$(dirname "$runtime_env")"
+    chmod 0700 "$(dirname "$runtime_env")"
+    install -m 0600 /dev/null "$runtime_env"
+fi
+persist_env_kv() {
+    if grep -q "^$1=" "$runtime_env"; then
+        sed -i "s|^$1=.*|$1=$2|" "$runtime_env"
+    else
+        printf '%s=%s\n' "$1" "$2" >>"$runtime_env"
+    fi
+}
+persist_env_kv UURB_CANVAS_DISPLAY "$CANVAS_DISPLAY"
+persist_env_kv UURB_CANVAS_RESOLUTION "$CANVAS_RESOLUTION"
+chmod 0600 "$runtime_env"
+log "画布参数已持久化（UURB_CANVAS_DISPLAY=$CANVAS_DISPLAY UURB_CANVAS_RESOLUTION=$CANVAS_RESOLUTION）"
 log "部署 conpty shim 到 prefix compat"
 wine_prefix="${UURB_WINEPREFIX:-${WINEPREFIX:-$HOME/.local/share/wineprefixes/uu-remote}}"
 /usr/bin/install -m 0644 build/compat/uu-conpty.dll \
@@ -141,13 +164,25 @@ systemctl --user enable --now uu-remote-console.service \
 # 失败/重启事件落 ~/.local/state/uu-remote-bridge/watchdog.log，
 # 自检失败以非零码退出，journal 留下 Failed with result 高亮行。
 log "部署画布看门狗（uu-canvas-watchdog.timer，10 分钟周期）"
-for unit in uu-canvas-watchdog.service uu-canvas-watchdog.timer; do
-    install -m 0644 "$self_dir/$unit" "$HOME/.config/systemd/user/$unit"
-done
+# ExecStart 按实际仓库路径重写：模板占位 %h/UU-Remote_TerminalOnly 只在默认克隆
+# 位置碰巧可用，其余路径每次触发 exit 203 且 enable 仍报成功（静默失效）
+[[ "$repo_dir" =~ [[:space:]] ]] && die "仓库路径含空白，无法写入 systemd ExecStart：$repo_dir"
+sed "s|%h/UU-Remote_TerminalOnly|${repo_dir}|" "$self_dir/uu-canvas-watchdog.service" \
+    > "$HOME/.config/systemd/user/uu-canvas-watchdog.service"
+install -m 0644 "$self_dir/uu-canvas-watchdog.timer" "$HOME/.config/systemd/user/uu-canvas-watchdog.timer"
 systemctl --user daemon-reload
 systemctl --user enable --now uu-canvas-watchdog.timer \
     && log "✓ 画布看门狗已启用（journalctl --user -u uu-canvas-watchdog.service）" \
     || warn "✗ 画布看门狗启用失败"
+
+# 无 linger：SSH 会话结束 10s 后（UserStopDelaySec 默认值）用户管理器停止，
+# 画布/桥/console 全部终止，重启后也不会自启——无头部署的生命线
+log "启用 linger（SSH 断开/重启后用户单元存活）"
+sudo loginctl enable-linger "$bridge_user" \
+    || die "loginctl enable-linger 失败——无头部署缺少它，服务会在会话结束后停止"
+[[ -e "/var/lib/systemd/linger/$bridge_user" ]] \
+    || die "linger 未生效（/var/lib/systemd/linger/$bridge_user 缺失）"
+log "✓ linger 已启用（$bridge_user）"
 
 cat <<'EOF'
 
