@@ -275,6 +275,9 @@ def arm_guard(path, expected, original=None):
         return guard
 
 
+MAX_ROLLBACK_ATTEMPTS = 3
+
+
 def finish_guard(path, guard, record, state):
     record["state"] = state
     write_record(guard, record)
@@ -309,14 +312,46 @@ def rollback_guard(guard):
             return False
         if record["state"] == "aborted":
             return False
+        if record["state"] == "rolled-back-unverified":
+            # Terminal state from an exhausted earlier recovery: report and
+            # stop quietly instead of cycling (the timer has Restart=on-failure
+            # with no start limit).
+            print(
+                "Rollback remains unverified: recovery attempts were exhausted "
+                "earlier; the original configuration is in place. Inspect the bridge journal."
+            )
+            try:
+                finish_guard(path, guard, record, "rolled-back-unverified")
+            except RuntimeError:
+                pass
+            return False
         active = path.parent / "quality-guard-active"
         if read_config(active).strip() != str(guard).encode():
             raise RuntimeError("A different quality guard owns recovery; configuration was preserved.")
         observed = read_config(path)
         if observed not in (original, expected):
             raise RuntimeError("Bridge configuration changed externally and was preserved; rollback remains recorded.")
+        attempts = int(record.get("recovery_attempts", 0))
+        if attempts >= MAX_ROLLBACK_ATTEMPTS:
+            # The bridge cannot become ready on the restored configuration
+            # (or at all): restarting it again would only keep interrupting
+            # the working session. Leave the original config in place, stop
+            # retrying, and surface the unverified state.
+            print(
+                "Rollback could not confirm bridge readiness after "
+                f"{MAX_ROLLBACK_ATTEMPTS} attempts; the original configuration "
+                "is in place but unverified. Stopping recovery retries."
+            )
+            record["state"] = "rolled-back-unverified"
+            write_record(guard, record)
+            try:
+                finish_guard(path, guard, record, "rolled-back-unverified")
+            except RuntimeError:
+                pass
+            return False
         atomic_write(path, original)
         record["state"] = "restoring"
+        record["recovery_attempts"] = attempts + 1
         write_record(guard, record)
         systemctl("restart", "uu-remote-bridge.service")
         wait_ready(path)
@@ -459,8 +494,12 @@ def main(argv=None):
                 print("Guard recovery completed." if restored else "Guard was already resolved; configuration was preserved.")
         elif args.command == "bitrate":
             agent = Path.home() / ".local/bin/uu-agent"
-            result = subprocess.run([str(agent), "cli", "--set-bitrate-limit", str(args.mbps)],
-                                    capture_output=True, text=True)
+            try:
+                result = subprocess.run([str(agent), "cli", "--set-bitrate-limit", str(args.mbps)],
+                                        capture_output=True, text=True, timeout=60)
+            except subprocess.TimeoutExpired as error:
+                raise RuntimeError("UU client did not answer the bitrate command within 60s; "
+                                   "it may still be starting or blocked — inspect the client and retry.") from error
             expected = ("Bitrate limit reset to default (no limit)" if args.mbps == 0
                         else f"Bitrate limit set to {args.mbps} Mbps")
             if result.returncode or result.stdout.strip() != expected:

@@ -16,6 +16,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -58,14 +59,24 @@ def utc_now() -> str:
 
 def atomic_json(path: Path, value: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    with temporary.open("w", encoding="utf-8") as stream:
-        json.dump(value, stream, indent=2, sort_keys=True)
-        stream.write("\n")
-        stream.flush()
-        os.fsync(stream.fileno())
-    temporary.chmod(0o600)
-    temporary.replace(path)
+    # mkstemp instead of a PID-derived name: the file is created 0600/O_EXCL
+    # under an unpredictable name, so a crashed earlier run cannot leave a
+    # predictable 0644 window or a symlink that survives into the next write
+    # (same pattern as gameviewer_patchlib.atomic_write).
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            json.dump(value, stream, indent=2, sort_keys=True)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.chmod(temporary, 0o600)
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def load_json(path: Path, default: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -208,6 +219,8 @@ def command_output(
         stdin=subprocess.DEVNULL,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=timeout,
         check=False,
     )
@@ -331,8 +344,6 @@ def codex_rate_limits(
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
-            text=True,
-            bufsize=1,
         )
     except OSError as error:
         raise UpdateError(f"cannot start Codex rate-limit service: {error}") from error
@@ -352,33 +363,41 @@ def codex_rate_limits(
                 }
             },
         }
-        process.stdin.write(json.dumps(initialize) + "\n")
+        process.stdin.write((json.dumps(initialize) + "\n").encode())
         process.stdin.flush()
         initialized = False
         requested = False
+        # Binary reads bounded by the selector: readline() on a text pipe
+        # blocks until a whole line arrives, so a codex that stalls on a
+        # partial line would hang past the deadline while holding the
+        # updater lock.
+        pending = b""
         while time.monotonic() < deadline:
             remaining = max(0.1, deadline - time.monotonic())
             if not selector.select(remaining):
                 continue
-            line = process.stdout.readline()
-            if not line:
+            chunk = os.read(process.stdout.fileno(), 65536)
+            if not chunk:
                 break
-            try:
-                message = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if message.get("id") == 1 and "result" in message and not initialized:
-                process.stdin.write(json.dumps({"method": "initialized"}) + "\n")
-                request = {"id": 2, "method": "account/rateLimits/read"}
-                process.stdin.write(json.dumps(request) + "\n")
-                process.stdin.flush()
-                initialized = True
-                requested = True
-            elif message.get("id") == 2:
-                result = message.get("result")
-                if isinstance(result, dict):
-                    return result
-                raise UpdateError("Codex returned an invalid rate-limit response")
+            pending += chunk
+            while b"\n" in pending:
+                raw, _, pending = pending.partition(b"\n")
+                try:
+                    message = json.loads(raw.decode("utf-8", errors="replace"))
+                except json.JSONDecodeError:
+                    continue
+                if message.get("id") == 1 and "result" in message and not initialized:
+                    process.stdin.write((json.dumps({"method": "initialized"}) + "\n").encode())
+                    request = {"id": 2, "method": "account/rateLimits/read"}
+                    process.stdin.write((json.dumps(request) + "\n").encode())
+                    process.stdin.flush()
+                    initialized = True
+                    requested = True
+                elif message.get("id") == 2:
+                    result = message.get("result")
+                    if isinstance(result, dict):
+                        return result
+                    raise UpdateError("Codex returned an invalid rate-limit response")
         detail = "request timed out" if requested else "initialization failed"
         raise UpdateError(f"Codex rate-limit {detail}")
     except (OSError, BrokenPipeError) as error:
@@ -2391,6 +2410,8 @@ class Manager:
                 stdout=subprocess.PIPE,
                 stderr=errors,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 bufsize=1,
             )
             assert process.stdout is not None
@@ -2679,7 +2700,10 @@ def main() -> int:
             else:
                 manager.monitor()
         return 0
-    except (UpdateError, OSError, subprocess.SubprocessError) as error:
+    except (UpdateError, OSError, ValueError, subprocess.SubprocessError) as error:
+        # ValueError covers UnicodeDecodeError/JSONDecodeError escaping from
+        # capture_output text decoding — write the error status instead of
+        # dying with a traceback and leaving the task in an intermediate phase.
         if manager is not None:
             try:
                 manager.write_status("error", message=str(error))

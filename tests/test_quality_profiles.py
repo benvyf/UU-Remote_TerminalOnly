@@ -595,7 +595,7 @@ module.commit_guard(guard)
                 self.assertEqual(self.run_main("bitrate", str(number))[0], 0)
                 run.assert_called_once_with([str(self.home / ".local/bin/uu-agent"), "cli",
                                              "--set-bitrate-limit", str(number)],
-                                            capture_output=True, text=True)
+                                            capture_output=True, text=True, timeout=60)
         for number in (-1, 501):
             with self.assertRaises(argparse.ArgumentTypeError):
                 quality.bitrate(str(number))
