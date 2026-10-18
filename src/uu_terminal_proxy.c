@@ -1030,6 +1030,19 @@ static int anchor_session(const char *token, uint16_t port, const char *name)
     anchor = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (anchor == INVALID_SOCKET)
         return 0;
+    /* Bound the pre-hold handshake (connect + hello + accepted byte): a
+     * wedged broker must not hang the anchor call indefinitely (review
+     * 2026-10-18); the hold poll below overrides the receive timeout. */
+    {
+        DWORD handshake_timeout_ms = 10000;
+
+        setsockopt(anchor, SOL_SOCKET, SO_RCVTIMEO,
+                   (const char *)&handshake_timeout_ms,
+                   sizeof(handshake_timeout_ms));
+        setsockopt(anchor, SOL_SOCKET, SO_SNDTIMEO,
+                   (const char *)&handshake_timeout_ms,
+                   sizeof(handshake_timeout_ms));
+    }
     memset(&address, 0, sizeof(address));
     address.sin_family = AF_INET;
     address.sin_port = htons(port);

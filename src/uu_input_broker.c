@@ -1014,8 +1014,11 @@ static DWORD send_relay_inputs(DWORD source_count, const INPUT *source,
                                semantic_edit_state *edit_state,
                                DWORD *clamped_edits)
 {
-    INPUT translated[INPUT_BRIDGE_MAX_TRANSLATED_INPUTS];
-    input_segment segments[INPUT_BRIDGE_MAX_SEGMENTS];
+    /* ~960 KB combined: keep these off the call stack — MinGW's default 2 MB
+     * reserve leaves no headroom for the rest of the chain. This file spawns
+     * no threads of its own, so static storage is safe (review 2026-10-18). */
+    static INPUT translated[INPUT_BRIDGE_MAX_TRANSLATED_INPUTS];
+    static input_segment segments[INPUT_BRIDGE_MAX_SEGMENTS];
     x11_route_result x11_result;
     BOOL x11_considered;
     DWORD translated_count;

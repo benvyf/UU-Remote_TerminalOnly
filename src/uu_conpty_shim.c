@@ -329,6 +329,8 @@ static SOCKET connect_broker(COORD size)
         accepted != UURB_TERMINAL_ACCEPTED) {
         if (connection != INVALID_SOCKET)
             closesocket(connection);
+        /* Pair the WSAStartup above on this failed connect attempt */
+        WSACleanup();
         connection = INVALID_SOCKET;
     }
     SecureZeroMemory(token, sizeof(token));
@@ -495,6 +497,8 @@ void WINAPI shim_close(pseudo_console console)
          * close — waiting first would burn the full 2 s every time. */
         shutdown(session.socket, SD_BOTH);
         closesocket(session.socket);
+        /* Pair the WSAStartup from connect_broker (review 2026-10-18) */
+        WSACleanup();
         SetEvent(session.done);
     }
     if (close != NULL && console != NULL) {

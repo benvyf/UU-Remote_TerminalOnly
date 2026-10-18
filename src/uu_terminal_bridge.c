@@ -36,6 +36,9 @@
 #define MAX_SESSIONS 32
 #define MAX_ANCHORS 4
 #define HANDSHAKE_TIMEOUT_MS 5000
+/* Same-uid local clients hand off immediately; a silent connector must not
+ * stall a session holder for the full handshake budget (review 2026-10-18). */
+#define HANDOFF_TIMEOUT_MS 500
 #define FRAME_TIMEOUT_MS 5000
 #define IO_TIMEOUT_MS 5000
 #define VIEWER_SEND_TIMEOUT_MS 30000
@@ -405,7 +408,7 @@ static size_t osc3008_filter_chunk(const unsigned char *in, size_t len,
 static int read_handshake(int client, const char *expected_token,
                           struct handshake *result)
 {
-    struct uurb_terminal_hello hello;
+    struct uurb_terminal_hello hello = {0};
     struct uurb_terminal_session session = {0, 0};
     char supplied_token[UURB_TERMINAL_TOKEN_LENGTH];
     const char *reject_reason = NULL;
@@ -622,17 +625,20 @@ static int peer_is_same_user(int connection)
 
 static int pass_client(int holder, int client, const struct handoff *message)
 {
-    char control[CMSG_SPACE(sizeof(int))];
+    union {
+        struct cmsghdr align;
+        char buf[CMSG_SPACE(sizeof(int))];
+    } control;
     struct iovec vector = {.iov_base = (void *)message, .iov_len = sizeof(*message)};
     struct msghdr header;
     struct cmsghdr *entry;
 
-    memset(control, 0, sizeof(control));
+    memset(control.buf, 0, sizeof(control.buf));
     memset(&header, 0, sizeof(header));
     header.msg_iov = &vector;
     header.msg_iovlen = 1;
-    header.msg_control = control;
-    header.msg_controllen = sizeof(control);
+    header.msg_control = control.buf;
+    header.msg_controllen = sizeof(control.buf);
     entry = CMSG_FIRSTHDR(&header);
     entry->cmsg_level = SOL_SOCKET;
     entry->cmsg_type = SCM_RIGHTS;
@@ -643,19 +649,22 @@ static int pass_client(int holder, int client, const struct handoff *message)
 
 static int receive_client(int connection, struct handoff *message)
 {
-    char control[CMSG_SPACE(sizeof(int))];
+    union {
+        struct cmsghdr align;
+        char buf[CMSG_SPACE(sizeof(int))];
+    } control;
     struct iovec vector = {.iov_base = message, .iov_len = sizeof(*message)};
     struct msghdr header;
     struct cmsghdr *entry;
     int client = -1;
 
-    if (!wait_for_fd(connection, POLLIN, monotonic_milliseconds() + HANDSHAKE_TIMEOUT_MS))
+    if (!wait_for_fd(connection, POLLIN, monotonic_milliseconds() + HANDOFF_TIMEOUT_MS))
         return -1;
     memset(&header, 0, sizeof(header));
     header.msg_iov = &vector;
     header.msg_iovlen = 1;
-    header.msg_control = control;
-    header.msg_controllen = sizeof(control);
+    header.msg_control = control.buf;
+    header.msg_controllen = sizeof(control.buf);
     if (recvmsg(connection, &header, MSG_CMSG_CLOEXEC) != (ssize_t)sizeof(*message))
         return -1;
     entry = CMSG_FIRSTHDR(&header);
@@ -702,6 +711,7 @@ static int hold_session(int listener, int client, const struct handshake *handsh
     int64_t redraw_at = monotonic_milliseconds() + REDRAW_DELAY_MS;
     int pty_master = -1;
     int status;
+    int shell_gone = 0;
     int index;
     pid_t shell_pid;
 
@@ -720,9 +730,13 @@ static int hold_session(int listener, int client, const struct handshake *handsh
         int first_anchor;
         int ready;
 
-        if (waitpid(shell_pid, &status, WNOHANG) == shell_pid) {
+        if (!shell_gone && waitpid(shell_pid, &status, WNOHANG) == shell_pid) {
             shell_pid = -1;
-            break;
+            shell_gone = 1;
+            /* The shell may have written its final bytes right before
+             * exiting: keep polling until the pty reports EOF/EIO below so
+             * the tail reaches the viewer instead of being discarded
+             * (review 2026-10-18). */
         }
         descriptors[0] = (struct pollfd){.fd = listener, .events = POLLIN};
         descriptors[1] = (struct pollfd){.fd = pty_master, .events = POLLIN};
@@ -753,13 +767,16 @@ static int hold_session(int listener, int client, const struct handshake *handsh
 
             if (received <= 0)
                 break;
-            /* No viewer: output is dropped, as with dtach. */
-            if (attach >= 0) {
+            {
+                /* Feed the filter even with no viewer: a sequence split
+                 * across a detach must still advance the filter state, or
+                 * its remainder leaks as literal text after a reconnect
+                 * (review 2026-10-18). Output is still dropped. */
                 unsigned char filtered[sizeof(payload) + 16];
                 size_t filtered_len = osc3008_filter_chunk(
                     payload, (size_t)received, filtered);
 
-                if (filtered_len > 0 &&
+                if (attach >= 0 && filtered_len > 0 &&
                     !send_all_viewer(attach, filtered, filtered_len))
                     close_viewer(&attach);
             }
@@ -886,27 +903,30 @@ static int route_session(int client, const struct handshake *handshake)
             return passed ? 0 : 1;
         }
         close(holder);
-        if (handshake->role != UURB_TERMINAL_ROLE_ATTACH) {
-            fprintf(stderr, "rejected terminal bridge anchor reason=no_session\n");
-            return 1;
+        if (handshake->role == UURB_TERMINAL_ROLE_ATTACH) {
+            listener = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+            if (listener < 0)
+                return 1;
+            if (bind(listener, (struct sockaddr *)&address, address_size) != 0 ||
+                listen(listener, MAX_ANCHORS) != 0) {
+                /* Another handler created the session first; join it after
+                 * a short backoff (50/100/200 ms). */
+                fprintf(stderr, "terminal join_after_race attempt=%d\n", attempt);
+                close(listener);
+                usleep(50000 << attempt);
+                continue;
+            }
+            if (!send_accepted(client)) {
+                close(listener);
+                return 1;
+            }
+            return hold_session(listener, client, handshake);
         }
-        listener = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
-        if (listener < 0)
-            return 1;
-        if (bind(listener, (struct sockaddr *)&address, address_size) != 0 ||
-            listen(listener, MAX_ANCHORS) != 0) {
-            /* Another handler created the session first; join it after a
-             * short backoff (50/100/200 ms). */
-            fprintf(stderr, "terminal join_after_race attempt=%d\n", attempt);
-            close(listener);
-            usleep(50000 << attempt);
-            continue;
-        }
-        if (!send_accepted(client)) {
-            close(listener);
-            return 1;
-        }
-        return hold_session(listener, client, handshake);
+        /* An ANCHOR can lose the race against the viewer's session-creating
+         * attach: the holder socket does not exist yet. Back off and retry
+         * instead of rejecting immediately, or reconnect persistence
+         * silently drops (review 2026-10-18). Only ATTACH may create. */
+        usleep(50000 << attempt);
     }
     fprintf(stderr, "terminal join raced three times; refusing with BUSY\n");
     send_busy_byte(client);
@@ -1097,7 +1117,7 @@ static int write_ready_file(const char *path, uint16_t port)
             unlink(temporary);
             return 0;
         }
-        probe_fd = open(path, O_RDONLY | O_CLOEXEC);
+        probe_fd = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
         if (probe_fd >= 0) {
             ssize_t received = read(probe_fd, buffer, sizeof(buffer) - 1);
 
@@ -1350,14 +1370,26 @@ done:
         if (handlers[index] > 0)
             kill(handlers[index], SIGTERM);
     }
-    for (index = 0; index < MAX_SESSIONS; index++) {
-        if (handlers[index] > 0) {
-            struct timespec grace = {2, 0};
+    {
+        /* One shared 2 s grace for the whole pool: serially sleeping 2 s per
+         * handler made a full pool cost a minute of shutdown latency for no
+         * extra safety (review 2026-10-18). */
+        int64_t grace_deadline = monotonic_milliseconds() + 2000;
 
-            nanosleep(&grace, NULL);
-            kill(handlers[index], SIGKILL);
-            while (waitpid(handlers[index], NULL, 0) < 0 && errno == EINTR)
-                ;
+        for (index = 0; index < MAX_SESSIONS; index++) {
+            if (handlers[index] > 0) {
+                int64_t remaining = grace_deadline - monotonic_milliseconds();
+                struct timespec grace;
+
+                if (remaining > 0) {
+                    grace.tv_sec = remaining / 1000;
+                    grace.tv_nsec = (remaining % 1000) * 1000000L;
+                    nanosleep(&grace, NULL);
+                }
+                kill(handlers[index], SIGKILL);
+                while (waitpid(handlers[index], NULL, 0) < 0 && errno == EINTR)
+                    ;
+            }
         }
     }
     memset(expected_token, 0, sizeof(expected_token));
